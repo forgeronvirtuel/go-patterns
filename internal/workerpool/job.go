@@ -1,10 +1,16 @@
 package workerpool
 
-// Job represents an asynchronous task submitted to the worker pool.
+import "context"
+
+type TaskFuncWithContext func(ctx context.Context) error
+
 type Job struct {
-	done chan struct{}
-	err  error
-	task TaskFunc
+	done   chan struct{}
+	err    error
+	task   TaskFunc
+	ctask  TaskFuncWithContext
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Wait blocks until the job is finished and returns the task error (if any).
@@ -27,4 +33,22 @@ func (j *Job) wrapper() {
 	}
 	// Signal completion.
 	close(j.done)
+}
+
+// Context-aware wrapper
+func (j *Job) wrapperWithContext() {
+	defer close(j.done)
+
+	// Check if already cancelled before starting
+	select {
+	case <-j.ctx.Done():
+		j.err = j.ctx.Err()
+		return
+	default:
+	}
+
+	// Execute the task
+	if j.ctask != nil {
+		j.err = j.ctask(j.ctx)
+	}
 }

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"forgeronvirtuel.com/gopatterns/internal/workerpool"
@@ -103,7 +105,33 @@ func main() {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	fmt.Println("\n--- 4) Stopping pool ---")
+	fmt.Println("=== WorkerPool demonstration: Context-aware tasks ===")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	job, err := pool.SubmitWithContext(ctx, func(ctx context.Context) error {
+		for range 5 {
+			select {
+			case <-ctx.Done():
+				fmt.Println("Task cancelled:", ctx.Err())
+				return ctx.Err()
+			default:
+				fmt.Println("Working...")
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = job.Wait()
+	fmt.Println("Final error from job:", err)
+
+	fmt.Println("\nStopping pool...")
 	pool.Stop()
 	fmt.Println("Pool stopped. Exiting.")
 }

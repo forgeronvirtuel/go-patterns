@@ -1,6 +1,7 @@
 package workerpool
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -46,7 +47,12 @@ func (p *WorkerPool) worker() {
 			// Nil task is a signal for this worker to exit.
 			return
 		}
-		job.wrapper()
+		// Choose wrapper type
+		if job.ctask != nil {
+			job.wrapperWithContext()
+		} else {
+			job.wrapper()
+		}
 	}
 }
 
@@ -119,6 +125,54 @@ func (p *WorkerPool) Submit(task TaskFunc) (*Job, error) {
 	// Enqueue the job. This may block if the jobs channel is unbuffered
 	// and there are no workers currently ready to receive.
 	p.jobs <- job
+
+	return job, nil
+}
+
+// SubmitWithContext sends a context-aware task to the pool.
+// Non-blocking cancellation is supported. The task must respect ctx.Done() inside its logic.
+//
+// If ctx is already cancelled, the job is not sent to the pool.
+func (p *WorkerPool) SubmitWithContext(
+	ctx context.Context,
+	task TaskFuncWithContext,
+) (*Job, error) {
+
+	if task == nil {
+		return nil, errors.New("task cannot be nil")
+	}
+
+	// Immediate cancellation?
+	select {
+	case <-ctx.Done():
+		job := &Job{
+			done: make(chan struct{}),
+			err:  ctx.Err(),
+		}
+		close(job.done)
+		return job, nil
+	default:
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("worker pool is stopped")
+	}
+	jobsChan := p.jobs
+	p.mu.Unlock()
+
+	// Create job
+	cctx, cancel := context.WithCancel(ctx)
+	job := &Job{
+		done:   make(chan struct{}),
+		ctask:  task,
+		ctx:    cctx,
+		cancel: cancel,
+	}
+
+	// Enqueue job
+	jobsChan <- job
 
 	return job, nil
 }
