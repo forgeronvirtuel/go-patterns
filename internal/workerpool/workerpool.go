@@ -20,13 +20,13 @@ type WorkerPool struct {
 
 // NewWorkerPool creates a new worker pool with the given initial size.
 // Initial size can be 0 (lazy grow).
-func NewWorkerPool(initialSize int) *WorkerPool {
+func NewWorkerPool(initialSize int, queueCapacity int) *WorkerPool {
 	if initialSize < 0 {
 		initialSize = 0
 	}
 
 	p := &WorkerPool{
-		jobs: make(chan *Job),
+		jobs: make(chan *Job, queueCapacity),
 	}
 	p.Grow(initialSize)
 	return p
@@ -94,16 +94,6 @@ func (p *WorkerPool) Shrink(n int) {
 	}
 }
 
-// Do sends a task to the pool and blocks until it is finished.
-// It is implemented on top of Submit.
-func (p *WorkerPool) Do(task TaskFunc) error {
-	job, err := p.Submit(task)
-	if err != nil {
-		return err
-	}
-	return job.Wait()
-}
-
 // Submit sends a task to the pool and returns a Job handle immediately
 // without waiting for completion. The caller can later call job.Wait()
 // or use job.Done() to be notified when the task is finished.
@@ -131,6 +121,58 @@ func (p *WorkerPool) Submit(task TaskFunc) (*Job, error) {
 	p.jobs <- job
 
 	return job, nil
+}
+
+// TrySubmit sends a task to the pool without blocking.
+// If the queue is full or the pool is stopped, it returns an error.
+func (p *WorkerPool) TrySubmit(task TaskFunc) (*Job, error) {
+	if task == nil {
+		return nil, errors.New("task cannot be nil")
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("worker pool is stopped")
+	}
+	jobsChan := p.jobs // copy reference while protected
+	p.mu.Unlock()
+
+	job := &Job{
+		done: make(chan struct{}),
+		task: task,
+	}
+
+	select {
+	case jobsChan <- job:
+		// ok
+		return job, nil
+
+	default:
+		// queue full (or unbuffered channel currently blocked)
+		return nil, ErrQueueFull
+	}
+}
+
+// Do sends a task to the pool and blocks until it is finished.
+// It is implemented on top of Submit.
+func (p *WorkerPool) Do(task TaskFunc) error {
+	job, err := p.Submit(task)
+	if err != nil {
+		return err
+	}
+	return job.Wait()
+}
+
+// TryDo sends a task to the pool without blocking and waits until it is finished.
+// It is implemented on top of TrySubmit.
+// If the queue is full or the pool is stopped, it returns an error.
+func (p *WorkerPool) TryDo(task TaskFunc) error {
+	job, err := p.TrySubmit(task)
+	if err != nil {
+		return err
+	}
+	return job.Wait()
 }
 
 // Stop stops the pool completely: closes the jobs channel and waits

@@ -9,7 +9,7 @@ import (
 
 func main() {
 	// Create a pool with 3 workers.
-	pool := workerpool.NewWorkerPool(3)
+	pool := workerpool.NewWorkerPool(3, 0)
 	fmt.Println("Pool size:", pool.Size())
 
 	// Example 1: synchronous Do (blocking)
@@ -56,8 +56,58 @@ func main() {
 		}
 	}
 
-	// Stop the pool.
-	fmt.Println("Stopping pool...")
+	fmt.Println("=== WorkerPool experiment ===")
+
+	// Slow task (simulates heavy processing)
+	slowTask := func(id int) workerpool.TaskFunc {
+		return func() error {
+			fmt.Printf("[%s] Worker executing task %d...\n", ts(), id)
+			time.Sleep(2 * time.Second)
+			fmt.Printf("[%s] Worker finished task %d.\n", ts(), id)
+			return nil
+		}
+	}
+
+	fmt.Println("\n--- 1) Submit (blocking) demonstration ---")
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		fmt.Printf("[%s] Unblocking Submit because a worker has started.\n", ts())
+	}()
+
+	fmt.Printf("[%s] Sending blocking task #1...\n", ts())
+	pool.Submit(slowTask(1)) // should run immediately
+
+	fmt.Printf("[%s] Sending blocking task #2...\n", ts())
+	pool.Submit(slowTask(2)) // will wait until worker is free (if unbuffered)
+
+	fmt.Println("\n--- 2) TrySubmit (non-blocking) demonstration ---")
+
+	for i := 3; i <= 7; i++ {
+		fmt.Printf("[%s] Sending TrySubmit task %d...\n", ts(), i)
+
+		job, err := pool.TrySubmit(slowTask(i))
+		if err != nil {
+			fmt.Printf("[%s] TrySubmit(%d) FAILED: %v\n", ts(), i, err)
+			continue
+		}
+
+		go func(jobID int, j *workerpool.Job) {
+			_ = j.Wait()
+			fmt.Printf("[%s] Task %d completed (via TrySubmit)\n", ts(), jobID)
+		}(i, job)
+	}
+
+	fmt.Println("\n--- 3) Main is doing other work ---")
+	for i := 0; i < 5; i++ {
+		fmt.Printf("[%s] main() doing something...\n", ts())
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Println("\n--- 4) Stopping pool ---")
 	pool.Stop()
 	fmt.Println("Pool stopped. Exiting.")
+}
+
+func ts() string {
+	return time.Now().Format("15:04:05.000")
 }
