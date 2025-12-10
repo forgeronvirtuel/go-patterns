@@ -1,64 +1,145 @@
 package workerpool
 
 import (
+	"errors"
 	"sync"
 )
 
-// Worker represents a single goroutine that can execute submitted tasks.
-type Worker struct {
-	tasks chan func() // channel on which the main program sends tasks
-	wg    sync.WaitGroup
+// WorkerPool represents a dynamically resizable pool of worker goroutines.
+type WorkerPool struct {
+	jobs   chan func()
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	size   int
+	closed bool
 }
 
-// NewWorker creates a new Worker instance.
-func NewWorker() *Worker {
-	return &Worker{
-		tasks: make(chan func()),
+// NewWorkerPool creates a new worker pool with the given initial size.
+// Initial size can be 0 (lazy grow).
+func NewWorkerPool(initialSize int) *WorkerPool {
+	if initialSize < 0 {
+		initialSize = 0
+	}
+
+	p := &WorkerPool{
+		jobs: make(chan func()),
+	}
+	p.Grow(initialSize)
+	return p
+}
+
+// worker is the function executed by each worker goroutine.
+func (p *WorkerPool) worker() {
+	defer p.wg.Done()
+
+	for {
+		task, ok := <-p.jobs
+		if !ok {
+			// Channel closed: pool is stopping
+			return
+		}
+		if task == nil {
+			// Nil task is a signal for this worker to exit.
+			return
+		}
+		task()
 	}
 }
 
-// Start launches the worker goroutine.
-// It listens on the tasks channel and executes incoming functions.
-func (w *Worker) Start() {
-	w.wg.Add(1)
+// Grow increases the number of workers by n.
+func (p *WorkerPool) Grow(n int) {
+	if n <= 0 {
+		return
+	}
 
-	go func() {
-		defer w.wg.Done()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-		for task := range w.tasks {
-			if task == nil {
-				// Just in case, ignore nil tasks.
-				continue
-			}
-			task()
-		}
-	}()
+	if p.closed {
+		return
+	}
+
+	for i := 0; i < n; i++ {
+		p.wg.Add(1)
+		go p.worker()
+		p.size++
+	}
 }
 
-// Do sends a task to the worker and blocks until the task is finished.
-// The caller provides the task as a function with no arguments and no return value.
-func (w *Worker) Do(task func()) {
-	// done channel is used to signal that the task has completed.
+// Shrink decreases the number of workers by n (at most current size).
+// This is done by sending "nil" tasks that tell workers to exit.
+func (p *WorkerPool) Shrink(n int) {
+	if n <= 0 {
+		return
+	}
+
+	p.mu.Lock()
+	if n > p.size {
+		n = p.size
+	}
+	if n <= 0 || p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.size -= n
+	p.mu.Unlock()
+
+	// Send "exit signals" to n workers.
+	for i := 0; i < n; i++ {
+		p.jobs <- nil
+	}
+}
+
+// Do sends a task to the pool and waits until it is finished.
+// Returns an error if the pool is already stopped.
+func (p *WorkerPool) Do(task func()) error {
+	if task == nil {
+		return errors.New("task cannot be nil")
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return errors.New("worker pool is stopped")
+	}
+	p.mu.Unlock()
+
 	done := make(chan struct{})
 
-	// Wrap the user task to signal completion.
-	wrappedTask := func() {
+	wrapped := func() {
 		defer close(done)
 		task()
 	}
 
-	// Send the wrapped task to the worker.
-	w.tasks <- wrappedTask
+	// Send the task to the workers.
+	p.jobs <- wrapped
 
-	// Block here until the wrapped task has signaled completion.
+	// Block until the task is completed.
 	<-done
+	return nil
 }
 
-// Stop closes the tasks channel and waits for the worker goroutine to exit.
-func (w *Worker) Stop() {
-	// Closing the channel will cause the worker's for-range loop to exit.
-	close(w.tasks)
+// Stop stops the pool completely: closes the jobs channel and waits
+// for all workers to exit.
+func (p *WorkerPool) Stop() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	p.mu.Unlock()
 
-	// Wait for the worker goroutine to finish.
-	w.wg.Wait()
+	// Closing the channel will make all workers exit their loop.
+	close(p.jobs)
+
+	// Wait until all workers are done.
+	p.wg.Wait()
+}
+
+// Size returns the current number of workers (approximate, but protected by a mutex).
+func (p *WorkerPool) Size() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.size
 }
