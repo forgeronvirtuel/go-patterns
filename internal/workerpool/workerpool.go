@@ -5,9 +5,13 @@ import (
 	"sync"
 )
 
+// TaskFunc is the function type executed by workers.
+// It can return an error that will be accessible from the Job handle.
+type TaskFunc func() error
+
 // WorkerPool represents a dynamically resizable pool of worker goroutines.
 type WorkerPool struct {
-	jobs   chan func()
+	jobs   chan *Job
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	size   int
@@ -22,7 +26,7 @@ func NewWorkerPool(initialSize int) *WorkerPool {
 	}
 
 	p := &WorkerPool{
-		jobs: make(chan func()),
+		jobs: make(chan *Job),
 	}
 	p.Grow(initialSize)
 	return p
@@ -33,16 +37,16 @@ func (p *WorkerPool) worker() {
 	defer p.wg.Done()
 
 	for {
-		task, ok := <-p.jobs
+		job, ok := <-p.jobs
 		if !ok {
 			// Channel closed: pool is stopping
 			return
 		}
-		if task == nil {
+		if job == nil {
 			// Nil task is a signal for this worker to exit.
 			return
 		}
-		task()
+		job.wrapper()
 	}
 }
 
@@ -90,33 +94,43 @@ func (p *WorkerPool) Shrink(n int) {
 	}
 }
 
-// Do sends a task to the pool and waits until it is finished.
+// Do sends a task to the pool and blocks until it is finished.
+// It is implemented on top of Submit.
+func (p *WorkerPool) Do(task TaskFunc) error {
+	job, err := p.Submit(task)
+	if err != nil {
+		return err
+	}
+	return job.Wait()
+}
+
+// Submit sends a task to the pool and returns a Job handle immediately
+// without waiting for completion. The caller can later call job.Wait()
+// or use job.Done() to be notified when the task is finished.
+//
 // Returns an error if the pool is already stopped.
-func (p *WorkerPool) Do(task func()) error {
+func (p *WorkerPool) Submit(task TaskFunc) (*Job, error) {
 	if task == nil {
-		return errors.New("task cannot be nil")
+		return nil, errors.New("task cannot be nil")
 	}
 
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return errors.New("worker pool is stopped")
+		return nil, errors.New("worker pool is stopped")
 	}
 	p.mu.Unlock()
 
-	done := make(chan struct{})
-
-	wrapped := func() {
-		defer close(done)
-		task()
+	job := &Job{
+		done: make(chan struct{}),
+		task: task,
 	}
 
-	// Send the task to the workers.
-	p.jobs <- wrapped
+	// Enqueue the job. This may block if the jobs channel is unbuffered
+	// and there are no workers currently ready to receive.
+	p.jobs <- job
 
-	// Block until the task is completed.
-	<-done
-	return nil
+	return job, nil
 }
 
 // Stop stops the pool completely: closes the jobs channel and waits

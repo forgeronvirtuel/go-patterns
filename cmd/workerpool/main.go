@@ -8,46 +8,52 @@ import (
 )
 
 func main() {
-	// Create a pool with 2 workers.
-	pool := workerpool.NewWorkerPool(2)
-	fmt.Println("Initial pool size:", pool.Size())
+	// Create a pool with 3 workers.
+	pool := workerpool.NewWorkerPool(3)
+	fmt.Println("Pool size:", pool.Size())
 
-	// Define a simple task.
-	task := func(id int) func() {
-		return func() {
-			fmt.Printf("Task %d started (pool size: %d)\n", id, pool.Size())
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Task %d finished\n", id)
-		}
-	}
-
-	// Run a few tasks sequentially (each Do waits for completion).
-	for i := 1; i <= 3; i++ {
-		if err := pool.Do(task(i)); err != nil {
-			fmt.Println("Error:", err)
-		}
-	}
-
-	// Grow the pool by 3 workers (total = 5).
-	fmt.Println("Growing pool by 3...")
-	pool.Grow(3)
-	fmt.Println("New pool size:", pool.Size())
-
-	// Launch several tasks sequentially (still via Do, blocking per task).
-	for i := 4; i <= 6; i++ {
-		if err := pool.Do(task(i)); err != nil {
-			fmt.Println("Error:", err)
-		}
-	}
-
-	// Shrink the pool by 4 workers.
-	fmt.Println("Shrinking pool by 4...")
-	pool.Shrink(4)
-	fmt.Println("Pool size after shrink:", pool.Size())
-
-	// Final task.
-	if err := pool.Do(task(7)); err != nil {
+	// Example 1: synchronous Do (blocking)
+	fmt.Println("=== Synchronous Do ===")
+	err := pool.Do(func() error {
+		fmt.Println("Sync task started")
+		time.Sleep(1 * time.Second)
+		fmt.Println("Sync task finished")
+		return nil
+	})
+	if err != nil {
 		fmt.Println("Error:", err)
+	}
+
+	// Example 2: asynchronous Submit
+	fmt.Println("=== Asynchronous Submit ===")
+
+	var jobs []*workerpool.Job
+
+	for i := 1; i <= 5; i++ {
+		i := i // capture
+		job, err := pool.Submit(func() error {
+			fmt.Printf("Async task %d started\n", i)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Async task %d finished\n", i)
+			return nil
+		})
+		if err != nil {
+			fmt.Println("Submit error:", err)
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+
+	// Do something else while tasks are running...
+	fmt.Println("Main is free to do other work while tasks run...")
+
+	// Wait for all async jobs to complete.
+	for idx, job := range jobs {
+		if err := job.Wait(); err != nil {
+			fmt.Printf("Job %d finished with error: %v\n", idx+1, err)
+		} else {
+			fmt.Printf("Job %d finished successfully\n", idx+1)
+		}
 	}
 
 	// Stop the pool.
