@@ -10,23 +10,44 @@ import (
 )
 
 func main() {
+	// experimentDo()
+	experimentSubmit()
+	// experimentTrySubmit()
+	// experimentContextAwareTask()
+	// experimentJobsChannelResize()
+}
+
+func ts() string {
+	return time.Now().Format("15:04:05.000")
+}
+
+func experimentDo() {
 	// Create a pool with 3 workers.
 	pool := workerpool.NewWorkerPool(3, 0)
 	fmt.Println("Pool size:", pool.Size())
 
 	// Example 1: synchronous Do (blocking)
 	fmt.Println("=== Synchronous Do ===")
-	err := pool.Do(func() error {
-		fmt.Println("Sync task started")
-		time.Sleep(1 * time.Second)
-		fmt.Println("Sync task finished")
-		return nil
-	})
-	if err != nil {
-		fmt.Println("Error:", err)
+	task := func(id int) func() error {
+		return func() error {
+			fmt.Printf("Sync task %d started\n", id)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Sync task %d finished\n", id)
+			return nil
+		}
 	}
 
-	// Example 2: asynchronous Submit
+	for i := range 3 {
+		err := pool.Do(task(i))
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
+	}
+}
+
+func experimentSubmit() {
+	pool := workerpool.NewWorkerPool(2, 0)
+
 	fmt.Println("=== Asynchronous Submit ===")
 
 	var jobs []*workerpool.Job
@@ -57,8 +78,46 @@ func main() {
 			fmt.Printf("Job %d finished successfully\n", idx+1)
 		}
 	}
+}
 
+func experimentContextAwareTask() {
+	fmt.Println("=== WorkerPool demonstration: Context-aware tasks ===")
+
+	pool := workerpool.NewWorkerPool(2, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	job, err := pool.SubmitWithContext(ctx, func(ctx context.Context) error {
+		for range 5 {
+			select {
+			case <-ctx.Done():
+				fmt.Println("Task cancelled:", ctx.Err())
+				return ctx.Err()
+			default:
+				fmt.Println("Working...")
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = job.Wait()
+	fmt.Println("Final error from job:", err)
+
+	fmt.Println("\nStopping pool...")
+	pool.Stop()
+	fmt.Println("Pool stopped. Exiting.")
+}
+
+func experimentTrySubmit() {
 	fmt.Println("=== WorkerPool experiment ===")
+
+	pool := workerpool.NewWorkerPool(2, 0)
 
 	// Slow task (simulates heavy processing)
 	slowTask := func(id int) workerpool.TaskFunc {
@@ -104,38 +163,49 @@ func main() {
 		fmt.Printf("[%s] main() doing something...\n", ts())
 		time.Sleep(500 * time.Millisecond)
 	}
-
-	fmt.Println("=== WorkerPool demonstration: Context-aware tasks ===")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	job, err := pool.SubmitWithContext(ctx, func(ctx context.Context) error {
-		for range 5 {
-			select {
-			case <-ctx.Done():
-				fmt.Println("Task cancelled:", ctx.Err())
-				return ctx.Err()
-			default:
-				fmt.Println("Working...")
-				time.Sleep(500 * time.Millisecond)
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = job.Wait()
-	fmt.Println("Final error from job:", err)
-
-	fmt.Println("\nStopping pool...")
-	pool.Stop()
-	fmt.Println("Pool stopped. Exiting.")
 }
 
-func ts() string {
-	return time.Now().Format("15:04:05.000")
+func experimentJobsChannelResize() {
+	fmt.Println("==== WorkerPool resize job chan demonstration ====")
+	pool := workerpool.NewWorkerPool(1, 5)
+	fmt.Println("Initial job channel capacity:", pool.JobsChannelCapacity())
+
+	fmt.Println("Submitting 5 tasks...")
+	for i := 1; i <= 5; i++ {
+		i := i
+		_, err := pool.Submit(func() error {
+			fmt.Printf("Task %d started\n", i)
+			time.Sleep(2 * time.Second)
+			fmt.Printf("Task %d finished\n", i)
+			return nil
+		})
+		if err != nil {
+			fmt.Println("Submit error:", err)
+		}
+		fmt.Println("Current job channel length:", pool.JobsChannelLength())
+	}
+
+	time.Sleep(1 * time.Second)
+	fmt.Println("Resizing pool to 4 workers...")
+	pool.ResizeJobsChannel(10)
+	fmt.Println("New Job Channel capacity:", pool.JobsChannelCapacity())
+
+	for i := 1; i <= 10; i++ {
+		i := i
+		_, err := pool.Submit(func() error {
+			fmt.Printf("Task %d started\n", i)
+			time.Sleep(2 * time.Second)
+			fmt.Printf("Task %d finished\n", i)
+			return nil
+		})
+		if err != nil {
+			fmt.Println("Submit error:", err)
+		}
+		fmt.Println("Current job channel length:", pool.JobsChannelLength())
+	}
+
+	time.Sleep(7 * time.Second)
+	fmt.Println("Stopping pool...")
+	pool.Stop()
+	fmt.Println("Pool stopped. Exiting.")
 }
