@@ -12,11 +12,12 @@ type TaskFunc func() error
 
 // WorkerPool represents a dynamically resizable pool of worker goroutines.
 type WorkerPool struct {
-	jobs   chan *Job
-	wg     sync.WaitGroup
-	mu     sync.Mutex
-	size   int
-	closed bool
+	jobsTransfer chan *Job
+	jobs         chan *Job
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	size         int
+	closed       bool
 }
 
 // NewWorkerPool creates a new worker pool with the given initial size.
@@ -27,10 +28,21 @@ func NewWorkerPool(initialSize int, queueCapacity int) *WorkerPool {
 	}
 
 	p := &WorkerPool{
-		jobs: make(chan *Job, queueCapacity),
+		jobs:         make(chan *Job, queueCapacity),
+		jobsTransfer: make(chan *Job),
 	}
 	p.Grow(initialSize)
+	p.wg.Add(1)
+	go transferJobs(p.jobs, p.jobsTransfer, &p.wg)
 	return p
+}
+
+func transferJobs(src, dst chan *Job, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for job := range src {
+		dst <- job
+	}
+	close(dst)
 }
 
 // worker is the function executed by each worker goroutine.
@@ -38,7 +50,7 @@ func (p *WorkerPool) worker() {
 	defer p.wg.Done()
 
 	for {
-		job, ok := <-p.jobs
+		job, ok := <-p.jobsTransfer
 		if !ok {
 			// Channel closed: pool is stopping
 			return
