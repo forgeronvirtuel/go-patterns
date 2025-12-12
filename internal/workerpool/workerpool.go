@@ -56,6 +56,22 @@ func (p *WorkerPool) worker() {
 	}
 }
 
+// ResizeTo changes the number of workers to the specified new size.
+func (p *WorkerPool) ResizeTo(newSize int) {
+	if newSize < 0 {
+		newSize = 0
+	}
+
+	p.mu.Lock()
+	currentSize := p.size
+	p.mu.Unlock()
+	if newSize > currentSize {
+		p.Grow(newSize - currentSize)
+	} else if newSize < currentSize {
+		p.Shrink(currentSize - newSize)
+	}
+}
+
 // Grow increases the number of workers by n.
 func (p *WorkerPool) Grow(n int) {
 	if n <= 0 {
