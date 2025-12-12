@@ -42,7 +42,29 @@ func transferJobs(src, dst chan *Job, wg *sync.WaitGroup) {
 	for job := range src {
 		dst <- job
 	}
-	close(dst)
+}
+
+func (p *WorkerPool) ResizeJobsChannel(capacity int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return
+	}
+
+	// Create new jobs channel
+	newJobs := make(chan *Job, capacity)
+
+	// Start transfer goroutine
+	p.wg.Add(1)
+	go transferJobs(newJobs, p.jobsTransfer, &p.wg)
+
+	// Swap channels
+	oldJobs := p.jobs
+	p.jobs = newJobs
+
+	// Close old jobs channel to stop its transfer goroutine
+	close(oldJobs)
 }
 
 // worker is the function executed by each worker goroutine.
@@ -280,4 +302,16 @@ func (p *WorkerPool) Size() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.size
+}
+
+func (p *WorkerPool) JobsChannelCapacity() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return cap(p.jobs)
+}
+
+func (p *WorkerPool) JobsChannelLength() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.jobs)
 }
